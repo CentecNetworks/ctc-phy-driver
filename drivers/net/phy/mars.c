@@ -198,8 +198,8 @@ static int mars_config_advert(struct phy_device *phydev)
 	adv &= ~(ADVERTISE_1000FULL | ADVERTISE_1000HALF);
 
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0))
-	if (linkmode_test_bit(SUPPORTED_1000baseT_Half, phydev->supported) ||
-	    linkmode_test_bit(SUPPORTED_1000baseT_Full, phydev->supported)) {
+	if (linkmode_test_bit(ETHTOOL_LINK_MODE_1000baseT_Half_BIT, phydev->supported) ||
+	    linkmode_test_bit(ETHTOOL_LINK_MODE_1000baseT_Full_BIT, phydev->supported)) {
 		ethtool_convert_link_mode_to_legacy_u32(&advertise_legacy,
 							advertise);
 		adv |= ethtool_adv_to_mii_ctrl1000_t(advertise_legacy);

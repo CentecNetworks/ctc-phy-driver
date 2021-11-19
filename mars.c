@@ -77,8 +77,8 @@
 /* WOL Pulse Width */
 #define CTC_MARS_WOL_WIDTH1             BIT(1)
 #define CTC_MARS_WOL_WIDTH2             BIT(2)
-/* WOL Enable Flag */
-#define CTC_MARS_WOL_ENABLE
+/* WOL Enable Flag: disable by default */
+// #define CTC_MARS_WOL_ENABLE
 
 enum mars_wol_type_e {
 	MARS_WOL_TYPE_LEVEL,

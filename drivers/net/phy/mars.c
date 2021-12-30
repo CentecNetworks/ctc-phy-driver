@@ -51,6 +51,7 @@
 
 /* Mars page register */
 #define CTC_MARS_PAGE_REG               0xa000
+#define CTC_MARS_CHIP_CFG_REG           0xa001
 
 #define CTC_PHY_GLB_DISABLE                  0
 #define CTC_PHY_GLB_ENABLE                   1
@@ -79,6 +80,16 @@
 #define CTC_MARS_WOL_WIDTH2             BIT(2)
 /* WOL Enable Flag: disable by default */
 // #define CTC_MARS_WOL_ENABLE
+
+static int g_port_type;
+static int g_port_status;
+
+enum mars_port_type_e {
+	MARS_PORT_TYPE_UTP,
+	MARS_PORT_TYPE_FIBER,
+	MARS_PORT_TYPE_COMBO,
+	MARS_PORT_TYPE_MAX
+};
 
 enum mars_wol_type_e {
 	MARS_WOL_TYPE_LEVEL,
@@ -134,6 +145,146 @@ static int mars_select_reg_space(struct phy_device *phydev, int space)
 	return ret;
 }
 
+static int mars_page_read(struct phy_device *phydev, int page, u32 regnum)
+{
+	int ret, oldpage, val;
+
+	oldpage = mars_ext_read(phydev, CTC_MARS_PAGE_REG);
+	if (oldpage < 0)
+		return oldpage;
+
+	ret = mars_select_reg_space(phydev, page);
+	if (ret < 0)
+		return ret;
+
+	val = phy_read(phydev, regnum);
+	/* Recover to old page */
+	ret = mars_select_reg_space(phydev, (oldpage & 0x2));
+	if (ret < 0)
+		return ret;
+
+	return val;
+}
+
+static int mars_page_write(struct phy_device *phydev, int page, u32 regnum,
+			   u16 value)
+{
+	int ret, oldpage, val;
+
+	oldpage = mars_ext_read(phydev, CTC_MARS_PAGE_REG);
+	if (oldpage < 0)
+		return oldpage;
+
+	ret = mars_select_reg_space(phydev, page);
+	if (ret < 0)
+		return ret;
+
+	val = phy_write(phydev, regnum, value);
+	/* Recover to old page */
+	ret = mars_select_reg_space(phydev, (oldpage & 0x2));
+	if (ret < 0)
+		return ret;
+
+	return val;
+}
+
+static int mars_page_ext_write(struct phy_device *phydev, int page, u32 regnum,
+			       u16 value)
+{
+	int ret, oldpage, val;
+
+	oldpage = mars_ext_read(phydev, CTC_MARS_PAGE_REG);
+	if (oldpage < 0)
+		return oldpage;
+
+	ret = mars_select_reg_space(phydev, page);
+	if (ret < 0)
+		return ret;
+
+	val = mars_ext_write(phydev, regnum, value);
+	/* Recover to old page */
+	ret = mars_select_reg_space(phydev, (oldpage & 0x2));
+	if (ret < 0)
+		return ret;
+
+	return val;
+}
+
+static int mars_setup_forced(struct phy_device *phydev)
+{
+	int ctl = 0;
+	int ret = 0;
+
+	if (g_port_type == MARS_PORT_TYPE_UTP ||
+	    g_port_type == MARS_PORT_TYPE_COMBO) {
+		ctl = mars_page_read(phydev, CTC_PHY_REG_SPACE, MII_BMCR);
+		if (ctl < 0)
+			return ctl;
+		ctl &= BMCR_LOOPBACK | BMCR_ISOLATE | BMCR_PDOWN;
+		phydev->pause = 0;
+		phydev->asym_pause = 0;
+
+		if (phydev->speed == SPEED_1000)
+			ctl |= BMCR_SPEED1000;
+		else if (phydev->speed == SPEED_100)
+			ctl |= BMCR_SPEED100;
+
+		if (phydev->duplex == DUPLEX_FULL)
+			ctl |= BMCR_FULLDPLX;
+
+		ret = mars_page_write(phydev, CTC_PHY_REG_SPACE, MII_BMCR, ctl);
+		if (ret < 0)
+			return ret;
+	}
+
+	if (g_port_type == MARS_PORT_TYPE_FIBER ||
+	    g_port_type == MARS_PORT_TYPE_COMBO) {
+		ctl = mars_page_read(phydev, CTC_SDS_REG_SPACE, MII_BMCR);
+		if (ctl < 0)
+			return ctl;
+		ctl &= ~BMCR_ANENABLE;
+		ret = mars_page_write(phydev, CTC_SDS_REG_SPACE, MII_BMCR, ctl);
+		if (ret < 0)
+			return ret;
+	}
+	return 0;
+}
+
+static int mars_restart_aneg(struct phy_device *phydev)
+{
+	int ctl = 0;
+	int ret = 0;
+
+	if (g_port_type == MARS_PORT_TYPE_UTP ||
+	    g_port_type == MARS_PORT_TYPE_COMBO) {
+		ctl = mars_page_read(phydev, CTC_PHY_REG_SPACE, MII_BMCR);
+
+		if (ctl < 0)
+			return ctl;
+
+		ctl |= BMCR_ANENABLE | BMCR_ANRESTART;
+
+		/* Don't isolate the PHY if we're negotiating */
+		ctl &= ~BMCR_ISOLATE;
+
+		ret = mars_page_write(phydev, CTC_PHY_REG_SPACE, MII_BMCR, ctl);
+		if (ret < 0)
+			return ret;
+	}
+
+	if (g_port_type == MARS_PORT_TYPE_FIBER ||
+	    g_port_type == MARS_PORT_TYPE_COMBO) {
+		ctl = mars_page_read(phydev, CTC_SDS_REG_SPACE, MII_BMCR);
+		if (ctl < 0)
+			return ctl;
+		ctl |= BMCR_ANENABLE;
+		ret = mars_page_write(phydev, CTC_SDS_REG_SPACE, MII_BMCR, ctl);
+		if (ret < 0)
+			return ret;
+	}
+	return 0;
+}
+
 static int mars_config_advert(struct phy_device *phydev)
 {
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0))
@@ -156,7 +307,7 @@ static int mars_config_advert(struct phy_device *phydev)
 #endif
 
 	/* Setup standard advertisement */
-	adv = phy_read(phydev, MII_ADVERTISE);
+	adv = mars_page_read(phydev, CTC_PHY_REG_SPACE, MII_ADVERTISE);
 	if (adv < 0)
 		return adv;
 
@@ -171,14 +322,16 @@ static int mars_config_advert(struct phy_device *phydev)
 #endif
 
 	if (adv != oldadv) {
-		err = phy_write(phydev, MII_ADVERTISE, adv);
+		err =
+		    mars_page_write(phydev, CTC_PHY_REG_SPACE, MII_ADVERTISE,
+				    adv);
 
 		if (err < 0)
 			return err;
 		changed = 1;
 	}
 
-	bmsr = phy_read(phydev, MII_BMSR);
+	bmsr = mars_page_read(phydev, CTC_PHY_REG_SPACE, MII_BMSR);
 	if (bmsr < 0)
 		return bmsr;
 
@@ -190,7 +343,7 @@ static int mars_config_advert(struct phy_device *phydev)
 		return changed;
 
 	/* Configure gigabit if it's supported */
-	adv = phy_read(phydev, MII_CTRL1000);
+	adv = mars_page_read(phydev, CTC_PHY_REG_SPACE, MII_CTRL1000);
 	if (adv < 0)
 		return adv;
 
@@ -214,7 +367,7 @@ static int mars_config_advert(struct phy_device *phydev)
 	if (adv != oldadv)
 		changed = 1;
 
-	err = phy_write(phydev, MII_CTRL1000, adv);
+	err = mars_page_write(phydev, CTC_PHY_REG_SPACE, MII_CTRL1000, adv);
 	if (err < 0)
 		return err;
 
@@ -224,56 +377,56 @@ static int mars_config_advert(struct phy_device *phydev)
 int mars1s_config_aneg(struct phy_device *phydev)
 {
 	int err, changed = 0;
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(3, 19, 0))
-	int ctl = 0;
-#endif
+	int ret = 0;
 
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 19, 0))
-	if (phydev->autoneg != AUTONEG_ENABLE)
-		return genphy_setup_forced(phydev);
-#else
-	if (phydev->autoneg != AUTONEG_ENABLE) {
-		phydev->asym_pause = 0;
-		phydev->pause = 0;
+	if (g_port_type == MARS_PORT_TYPE_UTP ||
+	    g_port_type == MARS_PORT_TYPE_COMBO) {
+		if (phydev->autoneg != AUTONEG_ENABLE)
+			ret = mars_setup_forced(phydev);
+		if (ret < 0)
+			return ret;
 
-		if (phydev->speed == SPEED_1000)
-			ctl |= BMCR_SPEED1000;
-		else if (phydev->speed == SPEED_100)
-			ctl |= BMCR_SPEED100;
+		err = mars_config_advert(phydev);
+		if (err < 0)	/* error */
+			return err;
 
-		if (phydev->duplex == DUPLEX_FULL)
-			ctl |= BMCR_FULLDPLX;
+		changed |= err;
 
-		err = phy_write(phydev, MII_BMCR, ctl);
+		if (changed == 0) {
+			/* Advertisement hasn't changed,
+			 * but maybe aneg was never on to
+			 * begin with?  Or maybe phy was isolated?
+			 */
+			int ctl =
+			    mars_page_read(phydev, CTC_PHY_REG_SPACE, MII_BMCR);
 
-		return err;
-	}
-#endif
+			if (ctl < 0)
+				return ctl;
 
-	err = mars_config_advert(phydev);
-	if (err < 0)		/* error */
-		return err;
+			if (!(ctl & BMCR_ANENABLE) || (ctl & BMCR_ISOLATE))
+				changed = 1;	/* do restart aneg */
+		}
 
-	changed |= err;
-
-	if (changed == 0) {
-		/* Advertisement hasn't changed, but maybe aneg was never on to
-		 * begin with?  Or maybe phy was isolated?
+		/* Only restart aneg if we are advertising something different
+		 * than we were before.
 		 */
-		int ctl = phy_read(phydev, MII_BMCR);
-
-		if (ctl < 0)
-			return ctl;
-
-		if (!(ctl & BMCR_ANENABLE) || (ctl & BMCR_ISOLATE))
-			changed = 1;	/* do restart aneg */
+		if (changed > 0)
+			ret = mars_restart_aneg(phydev);
+		if (ret < 0)
+			return ret;
 	}
 
-	/* Only restart aneg if we are advertising something different
-	 * than we were before.
-	 */
-	if (changed > 0)
-		return genphy_restart_aneg(phydev);
+	if (g_port_type == MARS_PORT_TYPE_FIBER ||
+	    g_port_type == MARS_PORT_TYPE_COMBO) {
+		if (phydev->autoneg != AUTONEG_ENABLE) {
+			ret = mars_setup_forced(phydev);
+			return ret;
+		}
+
+		ret = mars_restart_aneg(phydev);
+		if (ret < 0)
+			return ret;
+	}
 
 	return 0;
 }
@@ -283,7 +436,7 @@ static int mars_ack_interrupt(struct phy_device *phydev)
 	int err;
 
 	/* Clear the interrupts by reading the reg */
-	err = phy_read(phydev, CTC_PHY_IEVENT);
+	err = mars_page_read(phydev, CTC_PHY_REG_SPACE, CTC_PHY_IEVENT);
 	if (err < 0)
 		return err;
 
@@ -295,33 +448,98 @@ static int mars_config_intr(struct phy_device *phydev)
 	int err;
 
 	if (phydev->interrupts == PHY_INTERRUPT_ENABLED)
-		err = phy_write(phydev, CTC_PHY_IMASK, CTC_PHY_IMASK_INIT);
+		err =
+		    mars_page_write(phydev, CTC_PHY_REG_SPACE, CTC_PHY_IMASK,
+				    CTC_PHY_IMASK_INIT);
 	else
-		err = phy_write(phydev, CTC_PHY_IMASK, CTC_PHY_IMASK_CLEAR);
+		err =
+		    mars_page_write(phydev, CTC_PHY_REG_SPACE, CTC_PHY_IMASK,
+				    CTC_PHY_IMASK_CLEAR);
 	return err;
+}
+
+static int mars_update_link(struct phy_device *phydev)
+{
+	int ret, status;
+
+	if (g_port_type == MARS_PORT_TYPE_UTP ||
+	    g_port_type == MARS_PORT_TYPE_COMBO) {
+		/* Do a fake read */
+		status = mars_page_read(phydev, CTC_PHY_REG_SPACE, MII_BMSR);
+		if (status < 0)
+			return status;
+
+		/* Read link and autonegotiation status */
+		status = mars_page_read(phydev, CTC_PHY_REG_SPACE, MII_BMSR);
+		if (status < 0)
+			return status;
+
+		if ((status & BMSR_LSTATUS) == 0) {
+			phydev->link = 0;
+		} else {
+			phydev->link = 1;
+			ret = mars_select_reg_space(phydev, CTC_PHY_REG_SPACE);
+			if (ret < 0)
+				return ret;
+
+			g_port_status = MARS_PORT_TYPE_UTP;
+			return 0;
+		}
+	}
+
+	if (g_port_type == MARS_PORT_TYPE_FIBER ||
+	    g_port_type == MARS_PORT_TYPE_COMBO) {
+		/* Do a fake read */
+		status = mars_page_read(phydev, CTC_SDS_REG_SPACE, MII_BMSR);
+		if (status < 0)
+			return status;
+
+		/* Read link and autonegotiation status */
+		status = mars_page_read(phydev, CTC_SDS_REG_SPACE, MII_BMSR);
+		if (status < 0)
+			return status;
+
+		if ((status & BMSR_LSTATUS) == 0) {
+			phydev->link = 0;
+		} else {
+			phydev->link = 1;
+			ret = mars_select_reg_space(phydev, CTC_SDS_REG_SPACE);
+			if (ret < 0)
+				return ret;
+
+			g_port_status = MARS_PORT_TYPE_FIBER;
+			return 0;
+		}
+	}
+
+	return 0;
 }
 
 static int mars_read_status(struct phy_device *phydev)
 {
 	int val = 0;
-	int err = 0;
-	int lpa;
+	int ret = 0;
+	int lpa, page;
 
 	/* Update the link, but return if there was an error */
-	err = genphy_update_link(phydev);
-	if (err)
-		return err;
+	ret = mars_update_link(phydev);
+	if (ret < 0)
+		return ret;
+	if (g_port_status)
+		page = CTC_SDS_REG_SPACE;
+	else
+		page = CTC_PHY_REG_SPACE;
 
 	phydev->speed = SPEED_10;
 	phydev->duplex = DUPLEX_HALF;
 	phydev->pause = 0;
 	phydev->asym_pause = 0;
 
-	val = phy_read(phydev, CTC_MARS_SSREG);
+	val = mars_page_read(phydev, page, CTC_MARS_SSREG);
 	if (val < 0)
 		return val;
 
-	lpa = phy_read(phydev, MII_LPA);
+	lpa = mars_page_read(phydev, page, MII_LPA);
 	if (lpa < 0)
 		return lpa;
 
@@ -348,12 +566,9 @@ static int mars_set_link_timer_2_6ms(struct phy_device *phydev)
 {
 	int ret = 0;
 
-	ret = mars_select_reg_space(phydev, CTC_SDS_REG_SPACE);
-	if (!ret)
-		mars_ext_write(phydev, 0xa5, 0x5);
-	mars_select_reg_space(phydev, CTC_PHY_REG_SPACE);
+	ret = mars_page_ext_write(phydev, CTC_SDS_REG_SPACE, 0xa5, 0x5);
 
-	return 0;
+	return ret;
 }
 
 static int mars_wol_en_cfg(struct phy_device *phydev,
@@ -419,24 +634,20 @@ static void mars_get_wol(struct phy_device *phydev, struct ethtool_wolinfo *wol)
 
 static int mars_set_wol(struct phy_device *phydev, struct ethtool_wolinfo *wol)
 {
-	int ret, oldpage, val;
+	int ret, val;
 	struct mars_wol_cfg_t wol_cfg;
 
 	memset(&wol_cfg, 0, sizeof(struct mars_wol_cfg_t));
-	oldpage = mars_ext_read(phydev, CTC_MARS_PAGE_REG);
-	if (oldpage < 0)
-		return oldpage;
-
-	/* Switch to phy page */
-	ret = mars_select_reg_space(phydev, CTC_PHY_REG_SPACE);
-	if (ret < 0)
-		return ret;
 
 	if (wol->wolopts & WAKE_MAGIC) {
 		/* Enable the WOL interrupt */
-		val = phy_read(phydev, CTC_MARS_INTR_REG);
+		val =
+		    mars_page_read(phydev, CTC_PHY_REG_SPACE,
+				   CTC_MARS_INTR_REG);
 		val |= CTC_MARS_WOL_INTR;
-		ret = phy_write(phydev, CTC_MARS_INTR_REG, val);
+		ret =
+		    mars_page_write(phydev, CTC_PHY_REG_SPACE,
+				    CTC_MARS_INTR_REG, val);
 		if (ret < 0)
 			return ret;
 
@@ -473,10 +684,27 @@ static int mars_set_wol(struct phy_device *phydev, struct ethtool_wolinfo *wol)
 			return ret;
 	}
 
-	/* Recover to old page */
-	ret = mars_select_reg_space(phydev, (oldpage & 0x1));
-	if (ret < 0)
-		return ret;
+	return 0;
+}
+
+static int mars_get_port_type(struct phy_device *phydev)
+{
+	int val;
+
+	val = mars_ext_read(phydev, CTC_MARS_CHIP_CFG_REG);
+	if (val < 0)
+		return val;
+	val &= 0x7;
+
+	if (val == 0x0 || val == 0x3) {
+		g_port_type = MARS_PORT_TYPE_UTP;
+		g_port_status = MARS_PORT_TYPE_UTP;
+	} else if (val == 0x1 || val == 0x4 || val == 0x5) {
+		g_port_type = MARS_PORT_TYPE_FIBER;
+		g_port_status = MARS_PORT_TYPE_FIBER;
+	} else {
+		g_port_type = MARS_PORT_TYPE_COMBO;
+	}
 
 	return 0;
 }
@@ -499,7 +727,7 @@ int mars_config_init(struct phy_device *phydev)
 		    SUPPORTED_BNC | SUPPORTED_Pause | SUPPORTED_Asym_Pause);
 
 	/* Do we support autonegotiation? */
-	val = phy_read(phydev, MII_BMSR);
+	val = mars_page_read(phydev, CTC_PHY_REG_SPACE, MII_BMSR);
 	if (val < 0)
 		return val;
 
@@ -516,7 +744,7 @@ int mars_config_init(struct phy_device *phydev)
 		features |= SUPPORTED_10baseT_Half;
 
 	if (val & BMSR_ESTATEN) {
-		val = phy_read(phydev, MII_ESTATUS);
+		val = mars_page_read(phydev, CTC_PHY_REG_SPACE, MII_ESTATUS);
 		if (val < 0)
 			return val;
 
@@ -533,6 +761,7 @@ int mars_config_init(struct phy_device *phydev)
 	phydev->supported &= features;
 	phydev->advertising &= features;
 #endif
+	mars_get_port_type(phydev);
 
 #ifdef CTC_MARS_WOL_ENABLE
 	wol.wolopts = 0;
@@ -547,15 +776,15 @@ int mars_config_init(struct phy_device *phydev)
 int mars1p_config_init(struct phy_device *phydev)
 {
 	/*RGMII clock 2.5M when link down, bit12:1->0 */
-	mars_ext_write(phydev, 0xc, 0x8051);
+	mars_page_ext_write(phydev, CTC_PHY_REG_SPACE, 0xc, 0x8051);
 	/*Disable sleep mode, bit15:1->0 */
-	mars_ext_write(phydev, 0x27, 0x2029);
+	mars_page_ext_write(phydev, CTC_PHY_REG_SPACE, 0x27, 0x2029);
 	/* disable PHY to respond to MDIO access with PHYAD0 */
 	/* MMD7 8001h: bit6: 0, change value: 0x7f --> 0x3f */
-	phy_write(phydev, 0xd, 0x7);
-	phy_write(phydev, 0xe, 0x8001);
-	phy_write(phydev, 0xd, 0x4007);
-	phy_write(phydev, 0xe, 0x3f);
+	mars_page_write(phydev, CTC_PHY_REG_SPACE, 0xd, 0x7);
+	mars_page_write(phydev, CTC_PHY_REG_SPACE, 0xe, 0x8001);
+	mars_page_write(phydev, CTC_PHY_REG_SPACE, 0xd, 0x4007);
+	mars_page_write(phydev, CTC_PHY_REG_SPACE, 0xe, 0x3f);
 
 	return mars_config_init(phydev);
 }

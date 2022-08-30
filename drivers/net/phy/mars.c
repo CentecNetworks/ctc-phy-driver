@@ -81,9 +81,6 @@
 /* WOL Enable Flag: disable by default */
 // #define CTC_MARS_WOL_ENABLE
 
-static int g_port_type;
-static int g_port_status;
-
 enum mars_port_type_e {
 	MARS_PORT_TYPE_UTP,
 	MARS_PORT_TYPE_FIBER,
@@ -214,9 +211,11 @@ static int mars_setup_forced(struct phy_device *phydev)
 {
 	int ctl = 0;
 	int ret = 0;
+	int port_type = 0;
 
-	if (g_port_type == MARS_PORT_TYPE_UTP ||
-	    g_port_type == MARS_PORT_TYPE_COMBO) {
+	port_type = *(int*)phydev->priv;
+	if (port_type == MARS_PORT_TYPE_UTP ||
+	    port_type == MARS_PORT_TYPE_COMBO) {
 		ctl = mars_page_read(phydev, CTC_PHY_REG_SPACE, MII_BMCR);
 		if (ctl < 0)
 			return ctl;
@@ -237,8 +236,8 @@ static int mars_setup_forced(struct phy_device *phydev)
 			return ret;
 	}
 
-	if (g_port_type == MARS_PORT_TYPE_FIBER ||
-	    g_port_type == MARS_PORT_TYPE_COMBO) {
+	if (port_type == MARS_PORT_TYPE_FIBER ||
+	    port_type == MARS_PORT_TYPE_COMBO) {
 		ctl = mars_page_read(phydev, CTC_SDS_REG_SPACE, MII_BMCR);
 		if (ctl < 0)
 			return ctl;
@@ -254,9 +253,12 @@ static int mars_restart_aneg(struct phy_device *phydev)
 {
 	int ctl = 0;
 	int ret = 0;
+	int port_type = 0;
 
-	if (g_port_type == MARS_PORT_TYPE_UTP ||
-	    g_port_type == MARS_PORT_TYPE_COMBO) {
+	port_type = *(int*)phydev->priv;
+
+	if (port_type == MARS_PORT_TYPE_UTP ||
+	    port_type == MARS_PORT_TYPE_COMBO) {
 		ctl = mars_page_read(phydev, CTC_PHY_REG_SPACE, MII_BMCR);
 
 		if (ctl < 0)
@@ -272,8 +274,8 @@ static int mars_restart_aneg(struct phy_device *phydev)
 			return ret;
 	}
 
-	if (g_port_type == MARS_PORT_TYPE_FIBER ||
-	    g_port_type == MARS_PORT_TYPE_COMBO) {
+	if (port_type == MARS_PORT_TYPE_FIBER ||
+	    port_type == MARS_PORT_TYPE_COMBO) {
 		ctl = mars_page_read(phydev, CTC_SDS_REG_SPACE, MII_BMCR);
 		if (ctl < 0)
 			return ctl;
@@ -378,9 +380,12 @@ int mars1s_config_aneg(struct phy_device *phydev)
 {
 	int err, changed = 0;
 	int ret = 0;
+	int port_type = 0;
 
-	if (g_port_type == MARS_PORT_TYPE_UTP ||
-	    g_port_type == MARS_PORT_TYPE_COMBO) {
+	port_type = *(int*)phydev->priv;
+
+	if (port_type == MARS_PORT_TYPE_UTP ||
+	    port_type == MARS_PORT_TYPE_COMBO) {
 		if (phydev->autoneg != AUTONEG_ENABLE)
 			ret = mars_setup_forced(phydev);
 		if (ret < 0)
@@ -416,8 +421,8 @@ int mars1s_config_aneg(struct phy_device *phydev)
 			return ret;
 	}
 
-	if (g_port_type == MARS_PORT_TYPE_FIBER ||
-	    g_port_type == MARS_PORT_TYPE_COMBO) {
+	if (port_type == MARS_PORT_TYPE_FIBER ||
+	    port_type == MARS_PORT_TYPE_COMBO) {
 		if (phydev->autoneg != AUTONEG_ENABLE) {
 			ret = mars_setup_forced(phydev);
 			return ret;
@@ -458,58 +463,52 @@ static int mars_config_intr(struct phy_device *phydev)
 	return err;
 }
 
-static int mars_update_link(struct phy_device *phydev)
+static int mars_update_link(struct phy_device *phydev, int *port_status)
 {
 	int ret, status;
 
-	if (g_port_type == MARS_PORT_TYPE_UTP ||
-	    g_port_type == MARS_PORT_TYPE_COMBO) {
-		/* Do a fake read */
-		status = mars_page_read(phydev, CTC_PHY_REG_SPACE, MII_BMSR);
-		if (status < 0)
-			return status;
+	/* Do a fake read */
+	status = mars_page_read(phydev, CTC_PHY_REG_SPACE, MII_BMSR);
+	if (status < 0)
+		return status;
 
-		/* Read link and autonegotiation status */
-		status = mars_page_read(phydev, CTC_PHY_REG_SPACE, MII_BMSR);
-		if (status < 0)
-			return status;
+	/* Read link and autonegotiation status */
+	status = mars_page_read(phydev, CTC_PHY_REG_SPACE, MII_BMSR);
+	if (status < 0)
+		return status;
 
-		if ((status & BMSR_LSTATUS) == 0) {
-			phydev->link = 0;
-		} else {
-			phydev->link = 1;
-			ret = mars_select_reg_space(phydev, CTC_PHY_REG_SPACE);
-			if (ret < 0)
-				return ret;
+	if ((status & BMSR_LSTATUS) == 0) {
+		phydev->link = 0;
+	} else {
+		phydev->link = 1;
+		ret = mars_select_reg_space(phydev, CTC_PHY_REG_SPACE);
+		if (ret < 0)
+			return ret;
 
-			g_port_status = MARS_PORT_TYPE_UTP;
-			return 0;
-		}
+		*port_status = MARS_PORT_TYPE_UTP;
+		return 0;
 	}
 
-	if (g_port_type == MARS_PORT_TYPE_FIBER ||
-	    g_port_type == MARS_PORT_TYPE_COMBO) {
-		/* Do a fake read */
-		status = mars_page_read(phydev, CTC_SDS_REG_SPACE, MII_BMSR);
-		if (status < 0)
-			return status;
+	/* Do a fake read */
+	status = mars_page_read(phydev, CTC_SDS_REG_SPACE, MII_BMSR);
+	if (status < 0)
+		return status;
 
-		/* Read link and autonegotiation status */
-		status = mars_page_read(phydev, CTC_SDS_REG_SPACE, MII_BMSR);
-		if (status < 0)
-			return status;
+	/* Read link and autonegotiation status */
+	status = mars_page_read(phydev, CTC_SDS_REG_SPACE, MII_BMSR);
+	if (status < 0)
+		return status;
 
-		if ((status & BMSR_LSTATUS) == 0) {
-			phydev->link = 0;
-		} else {
-			phydev->link = 1;
-			ret = mars_select_reg_space(phydev, CTC_SDS_REG_SPACE);
-			if (ret < 0)
-				return ret;
+	if ((status & BMSR_LSTATUS) == 0) {
+		phydev->link = 0;
+	} else {
+		phydev->link = 1;
+		ret = mars_select_reg_space(phydev, CTC_SDS_REG_SPACE);
+		if (ret < 0)
+			return ret;
 
-			g_port_status = MARS_PORT_TYPE_FIBER;
-			return 0;
-		}
+		*port_status = MARS_PORT_TYPE_FIBER;
+		return 0;
 	}
 
 	return 0;
@@ -520,12 +519,20 @@ static int mars_read_status(struct phy_device *phydev)
 	int val = 0;
 	int ret = 0;
 	int lpa, page;
+	int port_type = 0;
+	int port_status = 0;
 
-	/* Update the link, but return if there was an error */
-	ret = mars_update_link(phydev);
-	if (ret < 0)
-		return ret;
-	if (g_port_status)
+	port_type = *(int*)phydev->priv;
+
+	if (port_type == MARS_PORT_TYPE_COMBO) {
+		/* Update the link, but return if there was an error */
+		ret = mars_update_link(phydev, &port_status);
+		if (ret < 0)
+			return ret;
+	} else
+		port_status = port_type;
+
+	if (port_status)
 		page = CTC_SDS_REG_SPACE;
 	else
 		page = CTC_PHY_REG_SPACE;
@@ -689,22 +696,26 @@ static int mars_set_wol(struct phy_device *phydev, struct ethtool_wolinfo *wol)
 
 static int mars_get_port_type(struct phy_device *phydev)
 {
-	int val;
+	int val = 0;
+	int port_type = 0;
 
 	val = mars_ext_read(phydev, CTC_MARS_CHIP_CFG_REG);
 	if (val < 0)
 		return val;
 	val &= 0x7;
 
-	if (val == 0x0 || val == 0x3) {
-		g_port_type = MARS_PORT_TYPE_UTP;
-		g_port_status = MARS_PORT_TYPE_UTP;
-	} else if (val == 0x1 || val == 0x4 || val == 0x5) {
-		g_port_type = MARS_PORT_TYPE_FIBER;
-		g_port_status = MARS_PORT_TYPE_FIBER;
-	} else {
-		g_port_type = MARS_PORT_TYPE_COMBO;
-	}
+	if (val == 0x0 || val == 0x3)
+		port_type = MARS_PORT_TYPE_UTP;
+	else if (val == 0x1 || val == 0x4 || val == 0x5)
+		port_type = MARS_PORT_TYPE_FIBER;
+	else
+		port_type = MARS_PORT_TYPE_COMBO;
+
+    phydev->priv = kzalloc(sizeof(int), GFP_KERNEL);
+	if (!phydev->priv)
+		return -1;
+
+	*(int*)phydev->priv = port_type;
 
 	return 0;
 }
